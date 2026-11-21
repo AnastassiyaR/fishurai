@@ -86,11 +86,11 @@ construo {
     targets.configure {
       create("linuxX64", Target.Linux) {
         architecture.set(Target.Architecture.X86_64)
-        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B8/OpenJDK23U-jdk_x64_linux_hotspot_23.0.2_8.tar.gz")
+        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B7/OpenJDK23U-jdk_x64_linux_hotspot_23.0.2_7.tar.gz")
       }
       create("macM1", Target.MacOs) {
         architecture.set(Target.Architecture.AARCH64)
-        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B8/OpenJDK23U-jdk_aarch64_mac_hotspot_23.0.2_8.tar.gz")
+        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B7/OpenJDK23U-jdk_aarch64_mac_hotspot_23.0.2_7.tar.gz")
         // macOS needs an identifier
         identifier.set("ee.taltech.fishurai." + appName)
         // Optional: icon for macOS
@@ -98,7 +98,7 @@ construo {
       }
       create("macX64", Target.MacOs) {
         architecture.set(Target.Architecture.X86_64)
-        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B8/OpenJDK23U-jdk_x64_mac_hotspot_23.0.2_8.tar.gz")
+        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B7/OpenJDK23U-jdk_x64_mac_hotspot_23.0.2_7.tar.gz")
         // macOS needs an identifier
         identifier.set("ee.taltech.fishurai." + appName)
         // Optional: icon for macOS
@@ -106,7 +106,7 @@ construo {
       }
       create("winX64", Target.Windows) {
         architecture.set(Target.Architecture.X86_64)
-        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B8/OpenJDK23U-jdk_x64_windows_hotspot_23.0.2_8.zip")
+        jdkUrl.set("https://github.com/adoptium/temurin23-binaries/releases/download/jdk-23.0.2%2B7/OpenJDK23U-jdk_x64_windows_hotspot_23.0.2_7.zip")
         // Uncomment the next line to show a console when the game runs, to print messages.
         //useConsole.set(true)
       }
