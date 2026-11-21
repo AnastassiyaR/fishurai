@@ -1,0 +1,19 @@
+# Исключаем клиент и другие модули
+game/
+libs/
+
+# IDE и системные файлы
+.idea/
+*.iml
+*.iws
+*.ipr
+.git/
+.gitignore
+
+# Логи и кэш
+*.log
+.gradle/
+
+# Документация
+README.md
+*.md

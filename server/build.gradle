@@ -1,0 +1,46 @@
+plugins {
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_23
+    targetCompatibility = JavaVersion.VERSION_23
+}
+
+jar {
+    manifest {
+        attributes(
+                'Main-Class': 'ee.taltech.game.server.GameServer'
+        )
+    }
+}
+
+group = 'org.example'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "com.esotericsoftware:kryonet:2.22.0-RC1"
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.12'
+
+    implementation 'org.slf4j:slf4j-api:2.0.16'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+
+    compileOnly 'org.projectlombok:lombok:1.18.38'
+    annotationProcessor 'org.projectlombok:lombok:1.18.38'
+
+}
+
+application {
+    mainClass = 'ee.taltech.game.server.GameServer'
+}
+
+
+test {
+    useJUnitPlatform()
+}
