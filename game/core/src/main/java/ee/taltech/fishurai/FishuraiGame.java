@@ -12,12 +12,11 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
 import com.badlogic.gdx.utils.ScreenUtils;
 import com.badlogic.gdx.Input;
-import com.esotericsoftware.kryonet.Client;
-import com.esotericsoftware.kryonet.Connection;
-import com.esotericsoftware.kryonet.Listener;
 import main.java.ee.taltech.fishurai.bonus.BootBonus;
 import main.java.ee.taltech.fishurai.exceptions.ConnectionException;
 import main.java.ee.taltech.fishurai.fish.*;
+import main.java.ee.taltech.fishurai.net.GameClient;
+import main.java.ee.taltech.fishurai.net.MessageCodec;
 import main.java.ee.taltech.fishurai.rooms.GameRoomList;
 import main.java.ee.taltech.fishurai.screens.*;
 import main.java.ee.taltech.fishurai.rooms.ClientRoomManager;
@@ -61,7 +60,7 @@ public class FishuraiGame extends ApplicationAdapter {
     private float playerX, playerY;
     private float speed = 400f;
 
-    public static Client client;
+    public static GameClient client;
 
     public static int gameStateFlag = 0;
     private static final int LobbyScreen = 0;
@@ -157,24 +156,7 @@ public class FishuraiGame extends ApplicationAdapter {
         playerX = map.getWidth() / 2f;
         playerY = map.getHeight() / 2f + 400;
 
-        client = new Client();
-        client.start();
-
-        client.getKryo().register(GameRoomList.class);
-        client.getKryo().register(GameRoom.class);
-        client.getKryo().register(PlayerData.class);
-        client.getKryo().register(GameTimerMessage.class);
-
-        client.getKryo().register(int[].class);
-        client.getKryo().register(int[][].class);
-        client.getKryo().register(WaterTilesMessage.class);
-        client.getKryo().register(FishState.class);
-        client.getKryo().register(FishStateList.class);
-        client.getKryo().register(ArrayList.class);
-        client.getKryo().register(CollisionTilesMessage.class);
-
-        client.getKryo().register(FishingAttempt.class);
-        client.getKryo().register(FishCaughtMessage.class);
+        client = new GameClient(GameClient.resolveServerUrl());
 
         playerOwnScoreFont = new BitmapFont();
         playerOwnScoreFont.getData().setScale(2.2f);
@@ -188,75 +170,17 @@ public class FishuraiGame extends ApplicationAdapter {
         uiCamera = new OrthographicCamera();
         uiCamera.setToOrtho(false, Gdx.graphics.getWidth(), Gdx.graphics.getHeight());
 
-        try {
-            client.connect(5000, "localhost", 8087, 8088);
-            log.info("Connected to server!");
-
-            int[][] waterTiles = map.getWaterTiles();
-            client.sendTCP(new WaterTilesMessage(waterTiles, map.getTileSize()));
-
-            ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-            scheduler.schedule(() -> client.sendUDP("getRooms"), 1, TimeUnit.SECONDS);
-            scheduler.shutdown(); // the delayed task still runs; the thread then exits
-
-            int[][] collisionTiles = map.getCollisionTiles();
-            client.sendTCP(new CollisionTilesMessage(collisionTiles, map.getTileSize()));
-
-        } catch (IOException e) {
-            log.error("Connection error: " + e.getMessage(), e);
-            throw new ConnectionException("Unable to connect to server: " + e.getMessage());
-        }
-
         PlayerData aiPlayer = new PlayerData();
         aiPlayer.id = AI_PLAYER_ID;
         aiPlayer.fishCaught = 0;
         playersData.put(aiPlayer.id, aiPlayer);
 
+        // The server assigns our id when the connection is established (see onConnected).
         myPlayerData = new PlayerData();
-        myPlayerData.id = client.getID();
         myPlayerData.score = 0;
-        playersData.put(myPlayerData.id, myPlayerData);
-        client.sendUDP(myPlayerData);
 
-        client.addListener(new Listener() {
-            @Override
-            public void received(Connection connection, Object object) {
-                try {
-                    if (object instanceof GameTimerMessage) {
-                        GameTimerMessage timerMsg = (GameTimerMessage) object;
-                        gameTimeLeft = timerMsg.timeLeft;
-                        gameTimerStarted = timerMsg.gameStarted;
-
-                        if (gameTimeLeft <= 0) {
-                            Gdx.app.postRunnable(() -> gameStateFlag = ResultsScreen);
-                        }
-                    } else if (object instanceof List) {
-                        List<?> list = (List<?>) object;
-                        if (!list.isEmpty() && list.get(0) instanceof GameRoom) {
-                            @SuppressWarnings("unchecked")
-                            List<GameRoom> receivedRooms = (List<GameRoom>) list;
-                            ClientRoomManager.saveRooms(receivedRooms);
-                        }
-                    } else if (object instanceof PlayerData) {
-                        handlePlayerData((PlayerData) object);
-                    } else if (object instanceof FishStateList) {
-                        List<FishState> states = ((FishStateList) object).states;
-                        if (states != null && !states.isEmpty()) {
-                            fishManagerClient.updateFromServer(states);
-                        }
-                    } else if (object instanceof FishState) {
-                        FishState state = (FishState) object;
-                        if (!state.isCaught) {
-                            fishManagerClient.updateFromServer(Collections.singletonList(state));
-                        }
-                    } else if (object instanceof FishCaughtMessage) {
-                        handleFishCaught((FishCaughtMessage) object);
-                    }
-                } catch (Exception e) {
-                    log.error("Error processing network message", e);
-                }
-            }
-        });
+        client.setListener(this::onNetworkMessage);
+        client.setOnReady(this::onConnected);
 
         lobbyScreen = new LobbyScreen();
         settingsScreen = new SettingsScreen();
@@ -289,6 +213,62 @@ public class FishuraiGame extends ApplicationAdapter {
             }
         }
 
+        // Connecting happens in the background (a sleeping Render server can take a minute to wake up);
+        // render() shows the connection status until it is done.
+        client.start();
+    }
+
+    /** Runs on the network thread once the server has accepted us and assigned our id. */
+    private void onConnected() {
+        log.info("Connected to server as player {}", client.getID());
+
+        myPlayerData.id = client.getID();
+        playersData.put(myPlayerData.id, myPlayerData);
+
+        client.send(new WaterTilesMessage(map.getWaterTiles(), map.getTileSize()));
+        client.send(new CollisionTilesMessage(map.getCollisionTiles(), map.getTileSize()));
+        client.send(MessageCodec.GET_ROOMS);
+        client.send(myPlayerData);
+    }
+
+    private void onNetworkMessage(Object object) {
+        if (object instanceof GameTimerMessage) {
+            GameTimerMessage timerMsg = (GameTimerMessage) object;
+            gameTimeLeft = timerMsg.timeLeft;
+            gameTimerStarted = timerMsg.gameStarted;
+
+            if (gameTimeLeft <= 0) {
+                Gdx.app.postRunnable(() -> gameStateFlag = ResultsScreen);
+            }
+        } else if (object instanceof List) {
+            List<?> list = (List<?>) object;
+            if (!list.isEmpty() && list.get(0) instanceof GameRoom) {
+                @SuppressWarnings("unchecked")
+                List<GameRoom> receivedRooms = (List<GameRoom>) list;
+                ClientRoomManager.saveRooms(receivedRooms);
+            }
+        } else if (object instanceof PlayerData) {
+            handlePlayerData((PlayerData) object);
+        } else if (object instanceof FishStateList) {
+            List<FishState> states = ((FishStateList) object).states;
+            if (states != null && !states.isEmpty()) {
+                fishManagerClient.updateFromServer(states);
+            }
+        } else if (object instanceof FishCaughtMessage) {
+            handleFishCaught((FishCaughtMessage) object);
+        }
+    }
+
+    private void renderConnectionStatus() {
+        ScreenUtils.clear(0.15f, 0.15f, 0.2f, 1f);
+        float width = Gdx.graphics.getWidth();
+        float height = Gdx.graphics.getHeight();
+        uiCamera.setToOrtho(false, width, height);
+        batch.setProjectionMatrix(uiCamera.combined);
+        batch.begin();
+        rankingFont.draw(batch, client.getStatus(), 20, height / 2f + 20, width - 40,
+            com.badlogic.gdx.utils.Align.center, true);
+        batch.end();
     }
 
     private void handlePlayerData(PlayerData data) {
@@ -336,12 +316,12 @@ public class FishuraiGame extends ApplicationAdapter {
     public static void sendRemovedRoomsToServer(List<GameRoom> rooms) {
         GameRoomList roomList = new GameRoomList();
         roomList.rooms = rooms;
-        client.sendTCP(roomList);
+        client.send(roomList);
 
     }
 
     public static void sendRoomToServer(GameRoom room) {
-        client.sendTCP(room);
+        client.send(room);
     }
 
     private void createRankingBackground() {
@@ -586,6 +566,11 @@ public class FishuraiGame extends ApplicationAdapter {
 
     @Override
     public void render() {
+        if (!client.isReady()) {
+            renderConnectionStatus();
+            return;
+        }
+
         if (showInstructionScreen && gameStateFlag == RoomOptionsScreen) {
             instructionScreen.render();
             if (Gdx.input.isKeyJustPressed(Input.Keys.ENTER)) {
@@ -858,7 +843,7 @@ public class FishuraiGame extends ApplicationAdapter {
 
         if (isFishing) {
             hookY -= 300 * Gdx.graphics.getDeltaTime();
-            client.sendTCP(new FishingAttempt(hookX, hookY));
+            client.send(new FishingAttempt(hookX, hookY));
 
             if (hookY < 0) {
                 isFishing = false;
@@ -902,7 +887,7 @@ public class FishuraiGame extends ApplicationAdapter {
         }
 
         try {
-            client.sendTCP(data);
+            client.send(data);
         } catch (Exception e) {
             log.error("Error sending player data", e);
         }
@@ -925,7 +910,7 @@ public class FishuraiGame extends ApplicationAdapter {
         if (rankingFont != null) rankingFont.dispose();
         if (floatingScoreFont != null) floatingScoreFont.dispose();
         if (bootsTexture != null) bootsTexture.dispose();
-        if (client != null && client.isConnected()) {
+        if (client != null) {
             client.stop();
         }
         if (Gdx.app.getType() == Application.ApplicationType.Desktop) {

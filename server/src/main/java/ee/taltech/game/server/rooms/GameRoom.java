@@ -22,7 +22,7 @@ public class GameRoom {
     private int AiDifficulty;
     private int AiCount = 1;
 
-    // Runtime-only state: excluded from Kryo (transient) and from Jackson (@JsonIgnore).
+    // Runtime-only state: excluded from the wire format and the saved rooms file (@JsonIgnore).
     @JsonIgnore private transient AiPlayer aiController;
     @JsonIgnore private transient PlayerData aiPlayer;
     @JsonIgnore private transient FishGameState fishGameState;

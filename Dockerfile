@@ -11,6 +11,7 @@ WORKDIR /app
 
 COPY --from=builder /app/server/build/install/server ./server
 
-EXPOSE 8087 8088
+# Render injects $PORT; the server listens on it (HTTP + WebSocket).
+EXPOSE 8080
 
 CMD ["./server/bin/server"]

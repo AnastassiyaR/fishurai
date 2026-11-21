@@ -1,23 +1,18 @@
 package ee.taltech.game.server;
 
-import com.esotericsoftware.kryo.Kryo;
-import com.esotericsoftware.kryonet.Connection;
-import com.esotericsoftware.kryonet.Listener;
-import com.esotericsoftware.kryonet.Server;
-import com.sun.net.httpserver.HttpServer;
 import ee.taltech.game.server.exceptions.ServerBindingException;
 import ee.taltech.game.server.fish.FishCaughtMessage;
 import ee.taltech.game.server.fish.FishGameState;
 import ee.taltech.game.server.fish.FishState;
 import ee.taltech.game.server.fish.FishStateList;
 import ee.taltech.game.server.fish.FishingAttempt;
+import ee.taltech.game.server.net.MessageCodec;
+import ee.taltech.game.server.net.NetServer;
 import ee.taltech.game.server.rooms.GameRoom;
 import ee.taltech.game.server.rooms.GameRoomList;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -35,13 +30,13 @@ import static ee.taltech.game.server.rooms.RoomLoader.saveRooms;
 @Slf4j
 public class GameServer {
 
-    private static final int TCP_PORT = 8087;
-    private static final int UDP_PORT = 8088;
+    /** Used when the PORT environment variable (set by Render) is absent, e.g. when running locally. */
+    private static final int DEFAULT_PORT = 8080;
     private static final int AI_PLAYER_ID = 999;
     private static final float AI_SPEED_MULTIPLIER = 1.5f;
     private static final int GAME_LENGTH_SECONDS = 120;
 
-    private final Server server = new Server();
+    private final NetServer server;
     private final Map<Integer, PlayerData> players = new ConcurrentHashMap<>();
     private final Map<String, ScheduledFuture<?>> roomTimers = new ConcurrentHashMap<>();
     private final Map<String, Integer> roomTimeLeft = new ConcurrentHashMap<>();
@@ -49,7 +44,7 @@ public class GameServer {
     /** All periodic work runs on this single thread, so the loops never race with each other. */
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-    /** Must stay an ArrayList: it is sent to clients as-is and ArrayList is the registered list type. */
+    /** Sent to clients as a list of rooms. */
     private final List<GameRoom> rooms = new ArrayList<>();
     private volatile WaterTilesMessage lastWaterTilesMessage;
 
@@ -59,83 +54,72 @@ public class GameServer {
     private long lastFishUpdateTime = System.currentTimeMillis();
 
     public GameServer() throws ServerBindingException {
-        try {
-            server.start();
-            server.bind(TCP_PORT, UDP_PORT);
-        } catch (IOException e) {
-            throw new ServerBindingException("Error binding the server to ports " + TCP_PORT + " and " + UDP_PORT, e);
-        }
-
-        registerKryoClasses();
-        scheduleRepeating(this::broadcastAllPlayers, 0, 100);
-
-        server.addListener(new Listener() {
+        int port = resolvePort();
+        server = new NetServer(port, AI_PLAYER_ID, new NetServer.Listener() {
             @Override
-            public void received(Connection connection, Object object) {
-                if (object instanceof GameRoomList roomList) {
-                    removeRooms(roomList.rooms, rooms);
-                    saveRooms(rooms);
-                    broadcastUpdatedRoomsToAllClients(rooms);
-                } else if (object instanceof GameRoom room) {
-                    PlayerData data = players.get(connection.getID());
-                    if (data != null) {
-                        data.roomId = room.getRoomId();
-                    }
-                    handleRoomFromClient(room, connection);
-                } else if ("getRooms".equals(object)) {
-                    server.sendToUDP(connection.getID(), rooms);
-                } else if (object instanceof WaterTilesMessage msg) {
-                    handleWaterTiles(msg);
-                } else if (object instanceof CollisionTilesMessage msg) {
-                    handleCollisionTiles(msg);
-                } else if (object instanceof FishingAttempt attempt) {
-                    handleFishingAttempt(connection, attempt);
-                } else if (object instanceof PlayerData data) {
-                    handlePlayerData(connection, data);
-                }
+            public void received(int connectionId, Object object) {
+                handleMessage(connectionId, object);
             }
 
             @Override
-            public void disconnected(Connection connection) {
-                int disconnectedId = connection.getID();
-                players.remove(disconnectedId);
-
-                PlayerData disconnectMsg = new PlayerData();
-                disconnectMsg.id = disconnectedId;
-                disconnectMsg.isDisconnected = true;
-                server.sendToAllTCP(disconnectMsg);
-
-                log.info("Player {} disconnected", disconnectedId);
-                players.values().forEach(GameServer.this::broadcastPositions);
+            public void disconnected(int connectionId) {
+                handleDisconnect(connectionId);
             }
         });
 
-        log.info("Server started!");
+        try {
+            server.startAndWait(10_000);
+        } catch (IOException e) {
+            throw new ServerBindingException("Error binding the server to port " + port, e);
+        }
+
+        scheduleRepeating(this::broadcastAllPlayers, 0, 100);
+        log.info("Server started on port {}!", port);
     }
 
-    /**
-     * The registration order defines the Kryo class ids and must match the client's exactly.
-     * Primitives, String and the like are pre-registered by Kryo itself.
-     */
-    private void registerKryoClasses() {
-        Class<?>[] classes = {
-                GameRoomList.class,
-                GameRoom.class,
-                PlayerData.class,
-                GameTimerMessage.class,
-                int[].class,
-                int[][].class,
-                WaterTilesMessage.class,
-                FishState.class,
-                FishStateList.class,
-                ArrayList.class,
-                CollisionTilesMessage.class,
-                FishingAttempt.class,
-                FishCaughtMessage.class
-        };
-        Kryo kryo = server.getKryo();
-        for (Class<?> type : classes) {
-            kryo.register(type);
+    /** Render tells the service which port to listen on through the PORT environment variable. */
+    private static int resolvePort() {
+        String portStr = System.getenv("PORT");
+        return portStr != null && !portStr.isBlank() ? Integer.parseInt(portStr.trim()) : DEFAULT_PORT;
+    }
+
+    private void handleMessage(int connectionId, Object object) {
+        if (object instanceof GameRoomList roomList) {
+            removeRooms(roomList.rooms, rooms);
+            saveRooms(rooms);
+            broadcastUpdatedRoomsToAllClients(rooms);
+        } else if (object instanceof GameRoom room) {
+            PlayerData data = players.get(connectionId);
+            if (data != null) {
+                data.roomId = room.getRoomId();
+            }
+            handleRoomFromClient(room, connectionId);
+        } else if (MessageCodec.GET_ROOMS.equals(object)) {
+            server.sendTo(connectionId, rooms);
+        } else if (object instanceof WaterTilesMessage msg) {
+            handleWaterTiles(msg);
+        } else if (object instanceof CollisionTilesMessage msg) {
+            handleCollisionTiles(msg);
+        } else if (object instanceof FishingAttempt attempt) {
+            handleFishingAttempt(connectionId, attempt);
+        } else if (object instanceof PlayerData data) {
+            handlePlayerData(connectionId, data);
+        }
+    }
+
+    private void handleDisconnect(int disconnectedId) {
+        if (players.containsKey(disconnectedId)) {
+            players.remove(disconnectedId);
+
+            PlayerData disconnectMsg = new PlayerData();
+            disconnectMsg.id = disconnectedId;
+            disconnectMsg.isDisconnected = true;
+            server.sendToAll(disconnectMsg);
+
+            log.info("Player {} disconnected", disconnectedId);
+            players.values().forEach(this::broadcastPositions);
+        } else {
+            log.debug("Unidentified connection {} disconnected", disconnectedId);
         }
     }
 
@@ -163,8 +147,8 @@ public class GameServer {
         }
     }
 
-    private void handleFishingAttempt(Connection connection, FishingAttempt attempt) {
-        PlayerData player = players.get(connection.getID());
+    private void handleFishingAttempt(int connectionId, FishingAttempt attempt) {
+        PlayerData player = players.get(connectionId);
         if (player == null) return;
 
         player.isFishing = true;
@@ -185,26 +169,26 @@ public class GameServer {
         if (gainedScore != 0) {
             player.fishCaught++;
             player.score += gainedScore;
-            server.sendToAllTCP(new FishCaughtMessage(player.id, true, player.fishCaught, gainedScore));
+            server.sendToAll(new FishCaughtMessage(player.id, true, player.fishCaught, gainedScore));
             broadcastPositions(player);
             log.info("Player {} caught something! Score: {}", player.id, gainedScore);
         } else {
-            connection.sendTCP(new FishCaughtMessage(player.id, false, player.fishCaught, 0));
+            server.sendTo(connectionId, new FishCaughtMessage(player.id, false, player.fishCaught, 0));
         }
     }
 
-    private void handlePlayerData(Connection connection, PlayerData data) {
+    private void handlePlayerData(int connectionId, PlayerData data) {
         if (data.id <= 0 || data.x < 0 || data.y < 0) {
             log.warn("Invalid player data received: {}", data);
             return;
         }
 
         // Score, catch count and room are owned by the server: keep them from the previous snapshot.
-        PlayerData existing = players.getOrDefault(connection.getID(), new PlayerData());
+        PlayerData existing = players.getOrDefault(connectionId, new PlayerData());
         data.fishCaught = existing.fishCaught;
         data.score = existing.score;
         data.roomId = existing.roomId;
-        players.put(connection.getID(), data);
+        players.put(connectionId, data);
 
         broadcastPositions(data);
     }
@@ -218,7 +202,7 @@ public class GameServer {
                 .orElse(null);
     }
 
-    private void handleRoomFromClient(GameRoom incomingRoom, Connection connection) {
+    private void handleRoomFromClient(GameRoom incomingRoom, int connectionId) {
         AiPlayer ai = new AiPlayer(AI_PLAYER_ID, 1000, 1050);
         ai.setDifficulty(incomingRoom.getAiDifficulty());
         incomingRoom.setAiController(ai);
@@ -251,7 +235,7 @@ public class GameServer {
         saveRooms(rooms);
         startAIUpdates();
 
-        matchedRoom.addPlayer(connection.getID());
+        matchedRoom.addPlayer(connectionId);
 
         boolean roomFull = matchedRoom.getPlayers().size() >= matchedRoom.getMaxPlayers() + 1
                 || matchedRoom.getMaxPlayers() == 1;
@@ -263,19 +247,17 @@ public class GameServer {
             GameTimerMessage startMsg = new GameTimerMessage();
             startMsg.gameStarted = true;
             startMsg.timeLeft = GAME_LENGTH_SECONDS;
-            for (Integer playerId : matchedRoom.getPlayers()) {
-                server.sendToTCP(playerId, startMsg);
-            }
+            server.sendToMany(new ArrayList<>(matchedRoom.getPlayers()), startMsg);
         }
 
         // Introduce the new player to the others in the room, and the others to the new player.
-        PlayerData newPlayer = players.get(connection.getID());
+        PlayerData newPlayer = players.get(connectionId);
         for (Integer playerId : matchedRoom.getPlayers()) {
             PlayerData other = players.get(playerId);
-            if (playerId != connection.getID() && other != null) {
-                connection.sendUDP(other);
+            if (playerId != connectionId && other != null) {
+                server.sendTo(connectionId, other);
                 if (newPlayer != null) {
-                    server.sendToUDP(playerId, newPlayer);
+                    server.sendTo(playerId, newPlayer);
                 }
             }
         }
@@ -293,7 +275,7 @@ public class GameServer {
 
     public void broadcastUpdatedRoomsToAllClients(List<GameRoom> roomsToSend) {
         roomsToSend.forEach(room -> log.info("Broadcasting room update: {}", room.getRoomId()));
-        server.sendToAllTCP(roomsToSend);
+        server.sendToAll(roomsToSend);
     }
 
     // ---- periodic tasks ---------------------------------------------------------------------------------------
@@ -324,11 +306,7 @@ public class GameServer {
 
             GameRoom room = getRoomById(roomId);
             if (room != null) {
-                for (Integer playerId : room.getPlayers()) {
-                    if (players.containsKey(playerId)) {
-                        server.sendToTCP(playerId, msg);
-                    }
-                }
+                server.sendToMany(connectedPlayers(room), msg);
                 if (time <= 0 && room.getAiPlayer() != null) {
                     room.getAiPlayer().isFishing = false;
                 }
@@ -387,15 +365,10 @@ public class GameServer {
                 aiPlayer.score += gained;
 
                 log.info("AI fishing attempt at ({},{})", aiPlayer.hookX, aiPlayer.hookY);
-                server.sendToTCP(aiPlayer.id, new FishingAttempt(aiPlayer.hookX, aiPlayer.hookY));
-                server.sendToAllTCP(new FishCaughtMessage(aiPlayer.id, true, aiPlayer.fishCaught, gained));
+                server.sendToAll(new FishCaughtMessage(aiPlayer.id, true, aiPlayer.fishCaught, gained));
             }
 
-            for (Integer playerId : room.getPlayers()) {
-                if (players.containsKey(playerId)) {
-                    server.sendToUDP(playerId, aiPlayer);
-                }
-            }
+            server.sendToMany(connectedPlayers(room), aiPlayer);
         }
     }
 
@@ -415,9 +388,7 @@ public class GameServer {
             if (state != null) {
                 state.update(deltaTime);
                 FishStateList fishStateList = new FishStateList(state.getFishStates());
-                for (Integer playerId : room.getPlayers()) {
-                    server.sendToTCP(playerId, fishStateList);
-                }
+                server.sendToMany(new ArrayList<>(room.getPlayers()), fishStateList);
             }
         }
     }
@@ -429,53 +400,31 @@ public class GameServer {
         GameRoom room = getRoomById(data.roomId);
         if (room == null) return;
 
-        for (Integer playerId : room.getPlayers()) {
-            if (players.containsKey(playerId)) {
-                server.sendToUDP(playerId, data);
-            }
-        }
+        server.sendToMany(connectedPlayers(room), data);
     }
 
-    private static void startRenderHttpServer() {
-        try {
-            String portStr = System.getenv("PORT");
-            int port = portStr != null ? Integer.parseInt(portStr) : 8080;
-
-            HttpServer httpServer = HttpServer.create(new InetSocketAddress(port), 0);
-            httpServer.createContext("/", exchange -> {
-                String path = exchange.getRequestURI().getPath();
-                if (!path.equals("/")) {
-                    String response = "Not Found";
-                    exchange.sendResponseHeaders(404, response.getBytes().length);
-                    OutputStream os = exchange.getResponseBody();
-                    os.write(response.getBytes());
-                    os.close();
-                    return;
-                }
-
-                String response = "Fishurai Server is online!";
-                exchange.sendResponseHeaders(200, response.getBytes().length);
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
-            });
-            httpServer.setExecutor(null);
-            httpServer.start();
-            log.info("Render HTTP health-check server started on port {}", port);
-        } catch (IOException e) {
-            log.error("Failed to start Render HTTP health-check server", e);
+    /** Ids of the room's players that have introduced themselves to the server (copied, so it is safe to iterate). */
+    private List<Integer> connectedPlayers(GameRoom room) {
+        List<Integer> ids = new ArrayList<>();
+        for (Integer playerId : new ArrayList<>(room.getPlayers())) {
+            if (players.containsKey(playerId)) {
+                ids.add(playerId);
+            }
         }
+        return ids;
     }
 
     public static void main(String[] args) throws ServerBindingException {
-        startRenderHttpServer();
         new GameServer();
     }
 
     public void dispose() {
         scheduler.shutdownNow();
-        server.stop();
-        server.close();
-        log.info("Server disposed and ports released.");
+        try {
+            server.stop(1000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        log.info("Server disposed and port released.");
     }
 }

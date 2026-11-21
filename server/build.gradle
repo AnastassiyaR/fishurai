@@ -23,7 +23,7 @@ repositories {
 }
 
 dependencies {
-    implementation "com.esotericsoftware:kryonet:2.22.0-RC1"
+    implementation 'org.java-websocket:Java-WebSocket:1.6.0'
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.12'

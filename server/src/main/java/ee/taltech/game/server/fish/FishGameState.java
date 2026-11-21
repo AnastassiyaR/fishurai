@@ -76,8 +76,7 @@ public class FishGameState {
     }
 
     /**
-     * Must stay an {@link ArrayList}: it goes over the wire inside {@link FishStateList} and ArrayList is the
-     * only list type registered with Kryo on both sides (Stream.toList() would break the protocol).
+     * Goes over the wire inside {@link FishStateList} as a JSON array.
      */
     public List<FishState> getFishStates() {
         return fishes.stream()
