@@ -4,6 +4,7 @@ import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryonet.Connection;
 import com.esotericsoftware.kryonet.Listener;
 import com.esotericsoftware.kryonet.Server;
+import com.sun.net.httpserver.HttpServer;
 import ee.taltech.game.server.exceptions.ServerBindingException;
 import ee.taltech.game.server.fish.FishCaughtMessage;
 import ee.taltech.game.server.fish.FishGameState;
@@ -15,6 +16,8 @@ import ee.taltech.game.server.rooms.GameRoomList;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -433,7 +436,39 @@ public class GameServer {
         }
     }
 
+    private static void startRenderHttpServer() {
+        try {
+            String portStr = System.getenv("PORT");
+            int port = portStr != null ? Integer.parseInt(portStr) : 8080;
+
+            HttpServer httpServer = HttpServer.create(new InetSocketAddress(port), 0);
+            httpServer.createContext("/", exchange -> {
+                String path = exchange.getRequestURI().getPath();
+                if (!path.equals("/")) {
+                    String response = "Not Found";
+                    exchange.sendResponseHeaders(404, response.getBytes().length);
+                    OutputStream os = exchange.getResponseBody();
+                    os.write(response.getBytes());
+                    os.close();
+                    return;
+                }
+
+                String response = "Fishurai Server is online!";
+                exchange.sendResponseHeaders(200, response.getBytes().length);
+                OutputStream os = exchange.getResponseBody();
+                os.write(response.getBytes());
+                os.close();
+            });
+            httpServer.setExecutor(null);
+            httpServer.start();
+            log.info("Render HTTP health-check server started on port {}", port);
+        } catch (IOException e) {
+            log.error("Failed to start Render HTTP health-check server", e);
+        }
+    }
+
     public static void main(String[] args) throws ServerBindingException {
+        startRenderHttpServer();
         new GameServer();
     }
 
