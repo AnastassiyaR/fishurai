@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create the GitHub release
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04 # an older Ubuntu keeps the .deb installable on newer ones too
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "23"
+
+      - name: Work out the version
+        id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build jar, Windows and Linux bundles
+        working-directory: game
+        run: |
+          chmod +x gradlew
+          ./gradlew lwjgl3:jar lwjgl3:packageWinX64 lwjgl3:packageLinuxX64 -PprojectVersion=${{ steps.v.outputs.version }}
+          ls -la lwjgl3/build/libs lwjgl3/build/construo/dist
+
+      - name: Build the .deb
+        run: |
+          V=${{ steps.v.outputs.version }}
+          sudo apt-get update -qq && sudo apt-get install -y -qq fakeroot
+          mkdir -p deb-in deb-out
+          cp "game/lwjgl3/build/libs/FISHURAI-$V.jar" deb-in/
+          jpackage --type deb \
+            --name fishurai \
+            --app-version "$V" \
+            --vendor "Fishurai" \
+            --description "Fishurai - multiplayer fishing game" \
+            --input deb-in \
+            --main-jar "FISHURAI-$V.jar" \
+            --main-class ee.taltech.fishurai.lwjgl3.Lwjgl3Launcher \
+            --icon game/lwjgl3/icons/logo.png \
+            --dest deb-out \
+            --linux-shortcut \
+            --linux-menu-group Game \
+            --linux-app-category games \
+            --linux-package-deps libgl1 \
+            --linux-deb-maintainer "fishurai@users.noreply.github.com" \
+            --add-modules java.base,java.desktop,java.logging,java.management,java.naming,java.sql,jdk.unsupported \
+            --java-options "--enable-native-access=ALL-UNNAMED"
+          ls -la deb-out
+
+      - name: Collect release files
+        run: |
+          V=${{ steps.v.outputs.version }}
+          mkdir dist
+          cp "game/lwjgl3/build/libs/FISHURAI-$V.jar" "dist/FISHURAI-$V.jar"
+          cp deb-out/*.deb "dist/FISHURAI-$V-linux-amd64.deb"
+          cp "$(find game/lwjgl3/build/construo/dist -iname '*win*.zip' | head -n1)" "dist/FISHURAI-$V-windows-x64.zip"
+          cp "$(find game/lwjgl3/build/construo/dist -iname '*linux*.zip' | head -n1)" "dist/FISHURAI-$V-linux-x64-portable.zip"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FISHURAI-${{ steps.v.outputs.version }}
+          path: dist/*
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
