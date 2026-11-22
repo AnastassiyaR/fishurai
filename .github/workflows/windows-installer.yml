@@ -41,10 +41,14 @@ jobs:
       - name: Unpack Windows package
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path lwjgl3/build -Recurse -Filter "*windows-x64*.zip" | Select-Object -First 1
+          $all = Get-ChildItem -Path lwjgl3/build -Recurse -Filter "*.zip"
+          Write-Host "All zips found under lwjgl3/build:"
+          $all | ForEach-Object { Write-Host "  $($_.FullName)" }
+          $zip = $all | Where-Object { $_.Name -match '(?i)win' } | Select-Object -First 1
           if (-not $zip) { throw "Windows zip not found under lwjgl3/build" }
-          Write-Host "Found zip: $($zip.FullName)"
-          if ($zip.Name -match '^FISHURAI-(.+)-windows-x64\.zip$') { $version = $Matches[1] } else { $version = "1.0.0" }
+          Write-Host "Using zip: $($zip.FullName)"
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          if ($tag -match '^v?(\d+\.\d+.*)$') { $version = $Matches[1] } else { $version = "1.0.0" }
           Expand-Archive -Path $zip.FullName -DestinationPath unpacked -Force
           $exe = Get-ChildItem -Path unpacked -Recurse -Filter "*.exe" | Where-Object { $_.Name -ieq "fishurai.exe" } | Select-Object -First 1
           if (-not $exe) { $exe = Get-ChildItem -Path unpacked -Recurse -Filter "*.exe" | Select-Object -First 1 }
